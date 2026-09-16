@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { DjMasterController } from './audio/djMasterController';
 import { buildSyntheticTrack, decodeUploadedAudioFile, DEMO_PRESETS, DemoTrackPreset } from './audio/trackGenerator';
 import { FIFTY_TEST_SONGS, SongLibraryItem } from './audio/songLibrary';
+import { INBUILT_LOOPS, buildInbuiltLoopTrack } from './audio/inbuiltLoops';
 import { DeckTelemetry, TrackData } from './types/dj';
 import { DownbeatPhaseTelemetry, Vdj8StyleLaunchPlan } from './audio/vdj8StyleSyncEngine';
 import { MasavuPhaseTelemetry } from './audio/masavuPhaseController';
@@ -16,6 +17,8 @@ import { BpmAnalyzerModal } from './components/BpmAnalyzerModal';
 import { SyncTelemetryPanel } from './components/SyncTelemetryPanel';
 import { PhaseAndDownbeatVisualizer } from './components/PhaseAndDownbeatVisualizer';
 import { SkeuomorphicFader } from './components/SkeuomorphicFader';
+import { LooperView } from './components/LooperView';
+import { LooperSyncState, BeatLoopLength } from './audio/audioLooperEngine';
 import { X, Wrench } from 'lucide-react';
 
 export default function App() {
@@ -23,6 +26,19 @@ export default function App() {
 
   const [trackA, setTrackA] = useState<TrackData | null>(null);
   const [trackB, setTrackB] = useState<TrackData | null>(null);
+
+  const [loopTrack, setLoopTrack] = useState<TrackData | null>(null);
+  const [selectedInbuiltLoopId, setSelectedInbuiltLoopId] = useState<string | null>('inbuilt-loop-1');
+  const [looperState, setLooperState] = useState<LooperSyncState>({
+    loaded: false,
+    playing: false,
+    syncedTo: null,
+    loopBeatCount: 4,
+    loopStartSample: 0,
+    loopEndSample: 0,
+    baseTempoMultiplier: 1.0,
+    currentSourceSample: 0,
+  });
 
   const [masterDeckId, setMasterDeckId] = useState<'A' | 'B'>('A');
   const [crossfader, setCrossfader] = useState(0);
@@ -128,6 +144,13 @@ export default function App() {
     setTrackA(tA);
     setTrackB(tB);
 
+    // Initialize looper with first inbuilt loop preset (Loop 1: Afrobeat Rhythm)
+    const initialLoopDef = INBUILT_LOOPS[0];
+    const initialLoopTrack = buildInbuiltLoopTrack(controller.audioCtx, initialLoopDef);
+    controller.audioLooperEngine.loadLoop(initialLoopTrack, 'AUTO');
+    setLoopTrack(initialLoopTrack);
+    setSelectedInbuiltLoopId(initialLoopDef.id);
+
     // Animation / Telemetry Loop
     let animId: number;
     const updateLoop = () => {
@@ -137,6 +160,7 @@ export default function App() {
         const telB = c.deckB.getTelemetry();
         setTelemetryA(telA);
         setTelemetryB(telB);
+        setLooperState(c.audioLooperEngine.getState());
 
         // Compute phase error
         const tMaster = c.getMasterDeckId() === 'A' ? c.deckA.getTrack() : c.deckB.getTrack();
@@ -176,6 +200,9 @@ export default function App() {
     if (!controllerRef.current) return;
     controllerRef.current.setMasterDeckId(deckId);
     setMasterDeckId(deckId);
+    if (controllerRef.current.audioLooperEngine.isPlaying()) {
+      controllerRef.current.syncLooperToCurrentMaster();
+    }
   }, []);
 
   // TRIGGER CLEAN-ROOM VDJ8 SYNC
@@ -205,9 +232,17 @@ export default function App() {
       const deck = deckId === 'A' ? controllerRef.current.deckA : controllerRef.current.deckB;
       if (deck.getTelemetry().isPlaying) {
         deck.pause();
+        const activeMaster = controllerRef.current.handleDeckPlaybackStateChanged();
+        if (activeMaster) {
+          setMasterDeckId(activeMaster);
+        }
       } else {
-        const isSlave = (masterDeckId === 'A' && deckId === 'B') || (masterDeckId === 'B' && deckId === 'A');
-        const masterDeck = masterDeckId === 'A' ? controllerRef.current.deckA : controllerRef.current.deckB;
+        controllerRef.current.promoteDeckIfNoActiveMaster(deckId);
+        setMasterDeckId(controllerRef.current.getMasterDeckId());
+
+        const currentMaster = controllerRef.current.getMasterDeckId();
+        const isSlave = (currentMaster === 'A' && deckId === 'B') || (currentMaster === 'B' && deckId === 'A');
+        const masterDeck = currentMaster === 'A' ? controllerRef.current.deckA : controllerRef.current.deckB;
         if (isSlave && masterDeck.getTelemetry().isPlaying && deck.getSync()) {
           handleTriggerVdj8Sync();
         } else {
@@ -215,13 +250,100 @@ export default function App() {
         }
       }
     },
-    [masterDeckId, handleTriggerVdj8Sync]
+    [handleTriggerVdj8Sync]
   );
 
   const handleCue = useCallback((deckId: 'A' | 'B') => {
     if (!controllerRef.current) return;
     const deck = deckId === 'A' ? controllerRef.current.deckA : controllerRef.current.deckB;
     deck.cue();
+    const activeMaster = controllerRef.current.handleDeckPlaybackStateChanged();
+    if (activeMaster) {
+      setMasterDeckId(activeMaster);
+    }
+  }, []);
+
+  // Looper handlers
+  const handleSelectInbuiltLoop = useCallback((loopId: string) => {
+    if (!controllerRef.current) return;
+    const controller = controllerRef.current;
+    const loopDef = INBUILT_LOOPS.find((l) => l.id === loopId);
+    if (!loopDef) return;
+
+    setSelectedInbuiltLoopId(loopId);
+    const track = buildInbuiltLoopTrack(controller.audioCtx, loopDef);
+    controller.audioLooperEngine.loadLoop(track, 'AUTO');
+    setLoopTrack(track);
+
+    // If currently playing and master deck exists, re-sync to the master deck
+    const activeMaster = controller.getActiveMasterDeckId();
+    const isPlaying = controller.audioLooperEngine.getState().playing;
+    if (isPlaying && activeMaster) {
+      const masterDeck = activeMaster === 'A' ? controller.deckA : controller.deckB;
+      controller.audioLooperEngine.syncToMaster(activeMaster, masterDeck);
+    }
+
+    setLooperState(controller.audioLooperEngine.getState());
+    setSyncAlert({
+      message: `Loaded ${loopDef.name} (${loopDef.bpm} BPM) - Original audio intact`,
+      type: 'success',
+    });
+  }, []);
+
+  const handleLooperUpload = useCallback(async (file: File) => {
+    if (!controllerRef.current) return;
+    const controller = controllerRef.current;
+    setIsAnalyzingAudio(true);
+    setAnalyzingFileName(`[BEAT LOOP] ${file.name}`);
+    try {
+      const track = await decodeUploadedAudioFile(controller.audioCtx, file);
+      controller.audioLooperEngine.loadLoop(track, 'AUTO');
+      setLoopTrack(track);
+      setSelectedInbuiltLoopId(null);
+      setSyncAlert({
+        message: `Loaded custom beat loop "${track.title}" (${track.bpm.toFixed(1)} BPM) - Ready for quantized sync`,
+        type: 'success',
+      });
+    } catch (err) {
+      console.error('Error decoding looper audio file:', err);
+      setSyncAlert({
+        message: 'Failed to decode beat loop file. Please try another audio file.',
+        type: 'warning',
+      });
+    } finally {
+      setIsAnalyzingAudio(false);
+      setAnalyzingFileName(null);
+    }
+  }, []);
+
+  const handleLooperPlay = useCallback(() => {
+    if (!controllerRef.current) return;
+    const success = controllerRef.current.syncLooperToCurrentMaster();
+    if (!success) {
+      const activeMaster = controllerRef.current.getActiveMasterDeckId();
+      if (!activeMaster) {
+        setSyncAlert({
+          message: 'Cannot sync looper: Please start Deck A or Deck B first as the song master.',
+          type: 'warning',
+        });
+      }
+    }
+  }, []);
+
+  const handleLooperStop = useCallback(() => {
+    controllerRef.current?.audioLooperEngine.stop();
+  }, []);
+
+  const handleLooperBeatCount = useCallback((count: BeatLoopLength) => {
+    controllerRef.current?.audioLooperEngine.setLoopBeatCount(count);
+  }, []);
+
+  const handleLooperStartSample = useCallback((sample: number) => {
+    controllerRef.current?.audioLooperEngine.setLoopStartSample(sample);
+  }, []);
+
+  const handleLooperVolume = useCallback((vol: number) => {
+    controllerRef.current?.audioLooperEngine.setVolume(vol);
   }, []);
 
   const handleSeek = useCallback((deckId: 'A' | 'B', sample: number) => {
@@ -354,11 +476,9 @@ export default function App() {
     if (mode === 'masterOut') {
       setActiveTopMode(activeTopMode === 'masterOut' ? 'music' : 'masterOut');
     } else if (mode === 'music') {
-      setIsLibraryOpen(true);
       setActiveTopMode('music');
     } else if (mode === 'looper') {
-      setActiveTopMode('looper');
-      setDeckSubView('performance');
+      setActiveTopMode(activeTopMode === 'looper' ? 'music' : 'looper');
     } else if (mode === 'settings') {
       setIsDiagnosticsOpen(true);
     }
@@ -450,6 +570,22 @@ export default function App() {
       {/* When MASTER OUT is active, show the full Master Output Rack */}
       {activeTopMode === 'masterOut' ? (
         <MasterOutputView onClose={() => setActiveTopMode('music')} />
+      ) : activeTopMode === 'looper' ? (
+        <LooperView
+          looperState={looperState}
+          loopTrack={loopTrack}
+          activeMasterDeckId={controllerRef.current?.getActiveMasterDeckId() ?? null}
+          masterBpm={masterDeckId === 'A' ? telemetryA.effectiveBpm : telemetryB.effectiveBpm}
+          selectedInbuiltLoopId={selectedInbuiltLoopId}
+          onSelectInbuiltLoop={handleSelectInbuiltLoop}
+          onUploadFile={handleLooperUpload}
+          onPlaySync={handleLooperPlay}
+          onStop={handleLooperStop}
+          onSetLoopBeatCount={handleLooperBeatCount}
+          onSetLoopStartSample={handleLooperStartSample}
+          onVolumeChange={handleLooperVolume}
+          onClose={() => setActiveTopMode('music')}
+        />
       ) : (
         /* Otherwise, show Deck A / Mixer / Deck B */
         <div className="w-full">

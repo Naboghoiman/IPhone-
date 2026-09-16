@@ -9,11 +9,61 @@ import { SlaveStartPlan } from '../types/dj';
 import { DjMasterController as BaseDjMasterController } from './djMasterControllerBase';
 import { Vdj8StyleLaunchPlan, Vdj8StyleSyncEngine } from './vdj8StyleSyncEngine';
 import { MasavuPhaseController, MasavuPhaseTelemetry } from './masavuPhaseController';
+import { AudioLooperEngine } from './audioLooperEngine';
 
 export class DjMasterController extends BaseDjMasterController {
   public readonly vdj8StyleSyncEngine = new Vdj8StyleSyncEngine();
   public readonly masavuPhaseController = new MasavuPhaseController();
+  public readonly audioLooperEngine: AudioLooperEngine;
   private vdj8LastSlaveStartPlan: Vdj8StyleLaunchPlan | null = null;
+
+  constructor(audioCtx?: AudioContext) {
+    super(audioCtx);
+
+    this.audioLooperEngine = new AudioLooperEngine(
+      this.audioCtx,
+      this.vdj8StyleSyncEngine
+    );
+
+    this.audioLooperEngine
+      .getOutputNode()
+      .connect(this.masterGain);
+  }
+
+  public syncLooperToCurrentMaster(): boolean {
+    const activeMasterId = this.getActiveMasterDeckId();
+
+    if (!activeMasterId) {
+      return false;
+    }
+
+    const masterDeck =
+      activeMasterId === 'A'
+        ? this.deckA
+        : this.deckB;
+
+    return this.audioLooperEngine.syncToMaster(
+      activeMasterId,
+      masterDeck
+    );
+  }
+
+  public override handleDeckPlaybackStateChanged(): 'A' | 'B' | null {
+    const previousMaster = this.getMasterDeckId();
+
+    const activeMaster = super.handleDeckPlaybackStateChanged();
+
+    if (
+      activeMaster &&
+      activeMaster !== previousMaster &&
+      this.audioLooperEngine.isPlaying()
+    ) {
+      // ONE clean re-sync to the newly promoted song master.
+      this.syncLooperToCurrentMaster();
+    }
+
+    return activeMaster;
+  }
 
   /**
    * Tempo family -> beat/bar target -> kick-preferred source position ->
@@ -240,5 +290,10 @@ export class DjMasterController extends BaseDjMasterController {
    */
   public triggerLegacyDefectiveSlaveStart(): SlaveStartPlan | null {
     return super.triggerBeatPerfectSlaveStart('beat');
+  }
+
+  public override dispose(): void {
+    this.audioLooperEngine.stop();
+    super.dispose();
   }
 }

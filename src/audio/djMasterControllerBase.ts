@@ -65,6 +65,85 @@ export class DjMasterController {
     this.deckB.setIsMaster(deckId === 'B');
   }
 
+  public getActiveMasterDeckId(): 'A' | 'B' | null {
+    const aPlaying = this.deckA.getTelemetry().isPlaying;
+    const bPlaying = this.deckB.getTelemetry().isPlaying;
+
+    if (aPlaying && !bPlaying) {
+      if (this.masterDeckId !== 'A') {
+        this.setMasterDeckId('A');
+      }
+      return 'A';
+    }
+
+    if (bPlaying && !aPlaying) {
+      if (this.masterDeckId !== 'B') {
+        this.setMasterDeckId('B');
+      }
+      return 'B';
+    }
+
+    if (aPlaying && bPlaying) {
+      // Never bounce master while both are running.
+      return this.masterDeckId;
+    }
+
+    return null;
+  }
+
+  public promoteDeckIfNoActiveMaster(deckId: 'A' | 'B'): void {
+    const aPlaying = this.deckA.getTelemetry().isPlaying;
+    const bPlaying = this.deckB.getTelemetry().isPlaying;
+
+    // Before the first song starts, assign that song as master.
+    if (!aPlaying && !bPlaying) {
+      this.setMasterDeckId(deckId);
+      return;
+    }
+
+    // If exactly one deck is already playing, that deck remains master.
+    this.getActiveMasterDeckId();
+  }
+
+  public handleDeckPlaybackStateChanged(): 'A' | 'B' | null {
+    const aPlaying = this.deckA.getTelemetry().isPlaying;
+    const bPlaying = this.deckB.getTelemetry().isPlaying;
+
+    if (
+      this.masterDeckId === 'A' &&
+      !aPlaying &&
+      bPlaying
+    ) {
+      this.setMasterDeckId('B');
+      return 'B';
+    }
+
+    if (
+      this.masterDeckId === 'B' &&
+      !bPlaying &&
+      aPlaying
+    ) {
+      this.setMasterDeckId('A');
+      return 'A';
+    }
+
+    if (aPlaying && !bPlaying) {
+      this.setMasterDeckId('A');
+      return 'A';
+    }
+
+    if (bPlaying && !aPlaying) {
+      this.setMasterDeckId('B');
+      return 'B';
+    }
+
+    if (aPlaying && bPlaying) {
+      return this.masterDeckId;
+    }
+
+    return null;
+  }
+
   public getCrossfader(): number {
     return this.crossfader;
   }

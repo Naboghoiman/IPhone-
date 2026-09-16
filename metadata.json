@@ -1,6 +1,6 @@
 {
   "name": "MASAVU DJ - VirtualDJ 8 Sync Engine",
-  "description": "DJ IMAN MASAVU professional DJ console featuring precision BeatGrid Refinement, dual stacked waveforms, high-precision 31-band master EQ, dynamics mastering, multi-FX rack, MASAVU Rhythmic Groove Matcher, and beat-perfect synchronization.",
+  "description": "DJ IMAN MASAVU professional DJ console featuring precision BeatGrid Refinement, dual stacked waveforms, 5 inbuilt master beat loops, looper board, high-precision 31-band master EQ, dynamics mastering, and beat-perfect synchronization.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

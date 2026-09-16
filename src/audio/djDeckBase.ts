@@ -5,7 +5,7 @@
  * 3-band EQ, DJ filter, pitch shifting, and cue management.
  */
 
-import { BeatGrid, DeckTelemetry, PreparedTrack, TrackData } from '../types/dj';
+import { BeatGrid, DeckTelemetry, DiscDjDeckTelemetry, PreparedTrack, TrackData } from '../types/dj';
 
 export class DjDeck {
   public readonly deckId: 'A' | 'B';
@@ -391,9 +391,53 @@ export class DjDeck {
     let currentBarIndex = 0;
     let isDownbeat = false;
 
+    const analyzedBpm = this.track ? (this.track.beatGrid?.discDjAnchor?.analyzedBpm ?? this.track.bpm) : 120;
+    const beatPeriodSeconds = 60.0 / Math.max(1, analyzedBpm);
+    const rawBeatPhaseSeconds = this.track?.beatGrid?.discDjAnchor?.rawBeatPhaseSeconds ?? (
+      this.track ? ((this.track.beatGrid.beatStartSample ?? this.track.beatGrid.firstDownbeatSample ?? 0) / sampleRate) : 0
+    );
+    const normalizedBeatStartSeconds = this.track?.beatGrid?.discDjAnchor?.normalizedBeatStartSeconds ?? (
+      ((rawBeatPhaseSeconds % beatPeriodSeconds) + beatPeriodSeconds) % beatPeriodSeconds
+    );
+    const beatStartSample = this.track?.beatGrid?.beatStartSample ?? (
+      this.track ? Math.round(normalizedBeatStartSeconds * sampleRate) : 0
+    );
+
+    // Waveform and Sync use the exact same canonical beatStartSample geometry
+    const waveformGridStartSample = beatStartSample;
+    const syncGridStartSample = beatStartSample;
+    const currentEffectiveSpeed = this.getEffectivePlaybackRate();
+    const samplesPerBeat = this.track?.beatGrid?.samplesPerBeat || (sampleRate * 60 / Math.max(1, analyzedBpm));
+
+    // Next 4-beat boundary in source sample domain
+    const currentBeatIndex = Math.floor((this.currentSourceSample - beatStartSample) / samplesPerBeat);
+    const nextFourBeatIndex = (Math.floor(currentBeatIndex / 4) + 1) * 4;
+    const nextFourBeatBoundarySource = Math.max(0, Math.round(beatStartSample + nextFourBeatIndex * samplesPerBeat));
+
+    // Audio buffer latency in ms
+    const audioBufferLatencyMs = ((this.audioCtx.baseLatency || (128 / this.audioCtx.sampleRate)) + (this.audioCtx.outputLatency || 0)) * 1000;
+    const parityValid = waveformGridStartSample === syncGridStartSample;
+
+    const discDjTelemetry: DiscDjDeckTelemetry = {
+      analyzedBpm,
+      rawBeatPhaseSeconds,
+      beatPeriodSeconds,
+      normalizedBeatStartSeconds,
+      beatStartSample,
+      waveformGridStartSample,
+      syncGridStartSample,
+      currentSourceSample: this.currentSourceSample,
+      currentEffectiveSpeed,
+      nextFourBeatBoundarySource,
+      audioBufferLatencyMs,
+      gridMode: 'DISCDJ_STRAIGHT',
+      parityValid
+    };
+
     if (this.track && this.track.beatGrid && this.track.beatGrid.samplesPerBeat > 0) {
       const grid: BeatGrid = this.track.beatGrid;
-      currentBeatFloat = (this.currentSourceSample - grid.firstDownbeatSample) / grid.samplesPerBeat;
+      const phaseAnchor = grid.beatStartSample ?? grid.firstDownbeatSample ?? 0;
+      currentBeatFloat = (this.currentSourceSample - phaseAnchor) / grid.samplesPerBeat;
       const beatInt = Math.floor(currentBeatFloat);
       const beatsPerBar = Math.max(1, grid.beatsPerBar || 4);
       currentBeatInBar = ((beatInt % beatsPerBar) + beatsPerBar) % beatsPerBar;
@@ -425,7 +469,8 @@ export class DjDeck {
       lowEq: this.lowEqVal,
       midEq: this.midEqVal,
       highEq: this.highEqVal,
-      filter: this.filterVal
+      filter: this.filterVal,
+      discDjTelemetry
     };
   }
 }

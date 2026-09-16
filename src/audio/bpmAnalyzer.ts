@@ -6,7 +6,7 @@
  * transient kick attack markers from real-world, local, and variable-tempo songs.
  */
 
-import { BeatGrid, TrackData } from '../types/dj';
+import { BeatGrid, DiscDjPhaseAnchor, TrackData } from '../types/dj';
 import { BeatGridRefiner, RefinedBeatGridResult } from './beatGridRefiner';
 
 export interface BpmAnalysisResult {
@@ -21,6 +21,8 @@ export interface BpmAnalysisResult {
   introDurationSec: number;
   isVariableBpm: boolean;
   bpmVariance: number;
+  beatStartSample: number;
+  discDjAnchor: DiscDjPhaseAnchor;
 }
 
 /**
@@ -195,11 +197,39 @@ export function analyzeAudioBufferBpm(
   const preciseBpm = Math.round(rawBpm * 100) / 100;
   const samplesPerBeat = (sampleRate * 60) / preciseBpm;
 
-  // 7. Find true first downbeat: search from rhythmStartFrame forward across 4 beats
-  // for the highest kick attack transient
+  // 7. DiscDJ Canonical Beat Phase Anchor Calculation
+  // Extract raw beat phase from rhythm onset novelty curve
   const rhythmStartSample = rhythmStartFrame * hopSize;
-  const searchRange = Math.min(totalFrames, rhythmStartSample + Math.round(samplesPerBeat * 4));
+  let strongestNoveltyFrame = rhythmStartFrame;
+  let maxNovInFirstBeat = 0;
+  const firstBeatFrames = Math.min(
+    envelopeLength,
+    rhythmStartFrame + Math.max(1, Math.round(envelopeSampleRate * (60.0 / preciseBpm)))
+  );
 
+  for (let n = rhythmStartFrame; n < firstBeatFrames; n++) {
+    if (novelty[n] > maxNovInFirstBeat) {
+      maxNovInFirstBeat = novelty[n];
+      strongestNoveltyFrame = n;
+    }
+  }
+
+  const rawBeatPhaseSeconds = (strongestNoveltyFrame * hopSize) / sampleRate;
+  const beatPeriodSeconds = 60.0 / preciseBpm;
+  const normalizedBeatStartSeconds =
+    ((rawBeatPhaseSeconds % beatPeriodSeconds) + beatPeriodSeconds) % beatPeriodSeconds;
+  const beatStartSample = Math.round(normalizedBeatStartSeconds * sampleRate);
+
+  const discDjAnchor: DiscDjPhaseAnchor = {
+    analyzedBpm: preciseBpm,
+    rawBeatPhaseSeconds,
+    beatPeriodSeconds,
+    normalizedBeatStartSeconds,
+    beatStartSample
+  };
+
+  // 8. Find musical first downbeat candidate (kept separately for bar/downbeat info if known)
+  const searchRange = Math.min(totalFrames, rhythmStartSample + Math.round(samplesPerBeat * 4));
   let downbeatCandidateSample = rhythmStartSample;
   let maxKickEnergy = 0;
 
@@ -211,15 +241,16 @@ export function analyzeAudioBufferBpm(
     }
   }
 
-  // Back-propagate this periodic phase backwards to near sample 0 so the entire song is gridded
+  // Back-propagate downbeat candidate backwards into first bar range
   let firstDownbeatSample = downbeatCandidateSample;
   while (firstDownbeatSample >= samplesPerBeat) {
     firstDownbeatSample -= Math.round(samplesPerBeat);
   }
   firstDownbeatSample = Math.max(0, firstDownbeatSample);
 
-  // 8. Generate full beat samples & transient kick markers
-  const totalBeats = Math.floor((totalFrames - firstDownbeatSample) / samplesPerBeat);
+  // 9. Generate STRAIGHT Repeating Beat Grid for DiscDJ Parity
+  // beatSample[n] = beatStartSample + n * samplesPerBeat
+  const totalBeats = Math.floor((totalFrames - beatStartSample) / samplesPerBeat);
   const beatSamples: number[] = [];
   const isDownbeat: boolean[] = [];
   const transientMarkers: number[] = [];
@@ -228,11 +259,16 @@ export function analyzeAudioBufferBpm(
   const localRadius = Math.round(sampleRate * 0.025); // +/- 25ms search radius
 
   for (let b = 0; b < totalBeats; b++) {
-    const theoreticalSample = Math.round(firstDownbeatSample + b * samplesPerBeat);
+    const theoreticalSample = Math.round(beatStartSample + b * samplesPerBeat);
     beatSamples.push(theoreticalSample);
-    isDownbeat.push(b % 4 === 0);
 
-    // Search around theoretical sample for actual local maximum (kick attack transient)
+    // Keep downbeat marker separate for bar info (Beat 1) without modifying beatStartSample
+    const isDown = firstDownbeatSample >= 0
+      ? Math.abs(((theoreticalSample - firstDownbeatSample) % Math.round(samplesPerBeat * 4))) < samplesPerBeat * 0.4
+      : b % 4 === 0;
+    isDownbeat.push(isDown);
+
+    // Search around theoretical sample for transient kick marker for telemetry
     const startIdx = Math.max(0, theoreticalSample - localRadius);
     const endIdx = Math.min(totalFrames - 1, theoreticalSample + localRadius);
 
@@ -249,7 +285,6 @@ export function analyzeAudioBufferBpm(
 
     transientMarkers.push(localMaxIdx);
 
-    // Track drift/deviation between transient and theoretical grid
     if (localMax > 0.08) {
       const devMs = ((localMaxIdx - theoreticalSample) / sampleRate) * 1000;
       beatDeviations.push(Math.abs(devMs));
@@ -269,7 +304,7 @@ export function analyzeAudioBufferBpm(
   if (beatDeviations.length > 0) {
     avgDevMs = beatDeviations.reduce((a, b) => a + b, 0) / beatDeviations.length;
   }
-  const isVariableBpm = avgDevMs > 12.0; // > 12ms average jitter indicates live drummer or variable tempo
+  const isVariableBpm = avgDevMs > 12.0;
   const bpmVariance = Math.round((avgDevMs / 10) * 10) / 10;
 
   return {
@@ -283,41 +318,72 @@ export function analyzeAudioBufferBpm(
     hasIntro,
     introDurationSec,
     isVariableBpm,
-    bpmVariance
+    bpmVariance,
+    beatStartSample,
+    discDjAnchor
   };
 }
 
 /**
  * Re-calibrates an existing TrackData with updated BPM, manual offset, or transient snapping.
+ * Strictly preserves the canonical beatStartSample unless newOffsetSample is explicitly specified.
  */
 export function recalibrateTrackBeatGrid(
   track: TrackData,
   newBpm: number,
-  firstDownbeatSample = 0
+  newOffsetSample?: number
 ): TrackData {
   const safeBpm = Math.max(40, Math.min(240, newBpm));
-  const samplesPerBeat = (track.sampleRate * 60) / safeBpm;
-  const totalFrames = track.audioBuffer.length;
-  const totalBeats = Math.floor((totalFrames - firstDownbeatSample) / samplesPerBeat);
+  const sampleRate = track.sampleRate;
+  const samplesPerBeat = (sampleRate * 60) / safeBpm;
+  const totalFrames = track.audioBuffer ? track.audioBuffer.length : Math.round(track.duration * sampleRate);
 
+  // Strictly preserve canonical beatStartSample unless an explicit new offset was given
+  const existingAnchor = track.beatGrid.discDjAnchor;
+  const rawBeatPhaseSeconds = newOffsetSample !== undefined
+    ? newOffsetSample / sampleRate
+    : (existingAnchor ? existingAnchor.rawBeatPhaseSeconds : (track.beatGrid.beatStartSample ?? track.beatGrid.firstDownbeatSample ?? 0) / sampleRate);
+
+  const beatPeriodSeconds = 60.0 / safeBpm;
+  const normalizedBeatStartSeconds =
+    ((rawBeatPhaseSeconds % beatPeriodSeconds) + beatPeriodSeconds) % beatPeriodSeconds;
+  const beatStartSample = Math.round(normalizedBeatStartSeconds * sampleRate);
+
+  const firstDownbeatSample = newOffsetSample !== undefined
+    ? newOffsetSample
+    : (track.beatGrid.firstDownbeatSample ?? beatStartSample);
+
+  const discDjAnchor: DiscDjPhaseAnchor = {
+    analyzedBpm: safeBpm,
+    rawBeatPhaseSeconds,
+    beatPeriodSeconds,
+    normalizedBeatStartSeconds,
+    beatStartSample
+  };
+
+  const totalBeats = Math.floor((totalFrames - beatStartSample) / samplesPerBeat);
   const beatSamples: number[] = [];
   const isDownbeat: boolean[] = [];
   const transientMarkers: number[] = [];
 
   for (let b = 0; b < totalBeats; b++) {
-    const sample = Math.round(firstDownbeatSample + b * samplesPerBeat);
+    const sample = Math.round(beatStartSample + b * samplesPerBeat);
     beatSamples.push(sample);
-    isDownbeat.push(b % 4 === 0);
+    const isDown = Math.abs(((sample - firstDownbeatSample) % Math.round(samplesPerBeat * 4))) < samplesPerBeat * 0.4;
+    isDownbeat.push(isDown);
     transientMarkers.push(sample);
   }
 
   const updatedBeatGrid: BeatGrid = {
     ...track.beatGrid,
     firstDownbeatSample,
+    beatStartSample,
+    discDjAnchor,
     samplesPerBeat,
     bpm: safeBpm,
     totalBeats,
-    confidence: 1.0, // manually verified or recalibrated
+    gridType: 'STRAIGHT',
+    confidence: 1.0,
     beatSamples,
     isDownbeat
   };
@@ -327,6 +393,7 @@ export function recalibrateTrackBeatGrid(
     bpm: safeBpm,
     beatGrid: updatedBeatGrid,
     warpMap: {
+      ...track.warpMap,
       transientMarkers
     }
   };

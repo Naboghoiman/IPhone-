@@ -217,26 +217,13 @@ export class Vdj8StyleSyncEngine {
 
     const selectedSlaveBeatSample = this.beatIndexToSample(targetSlaveBeatIndex, slaveGrid);
 
-    // MASAVU RHYTHMIC GROOVE MATCHER:
-    // Analyzes 1-2 bars of Master and Slave rhythm, computes best rhythmic alignment
-    // using timing-error scoring of strong kicks, and supplies slaveSourceSample.
-    // Falls back gracefully according to confidence (Groove -> Kick-snap -> Grid).
-    const grooveMatch = this.grooveMatcher.findBestGrooveMatch({
-      masterTrack,
-      slaveTrack,
-      targetMasterBeatIndex,
-      candidateSlaveBeatIndex: targetSlaveBeatIndex,
-      slavePlaybackMultiplier: tempo.playbackMultiplier,
-      quantizeMode
-    });
-
-    const finalSlaveBeatIndex = grooveMatch.slaveBeatIndex;
-    const slaveSourceSample = grooveMatch.slaveSourceSample;
-    const kickSnapped = grooveMatch.appliedMode !== 'grid';
-    const kickOffsetMs = grooveMatch.grooveOffsetMs;
-    const desiredGrooveOffsetMs = (grooveMatch.appliedMode === 'groove' || grooveMatch.appliedMode === 'kick-snap')
-      ? grooveMatch.grooveOffsetMs
-      : 0;
+    // DiscDJ Beat Phase Parity: strictly bypass groove matching and kick-snapping.
+    // finalSlaveSourceSample = selected grid-phase source sample
+    const finalSlaveBeatIndex = targetSlaveBeatIndex;
+    const slaveSourceSample = selectedSlaveBeatSample;
+    const kickSnapped = false;
+    const kickOffsetMs = 0;
+    const desiredGrooveOffsetMs = 0;
 
     const totalLatencyFrames =
       this.config.decoderLatencyFrames +
@@ -267,7 +254,7 @@ export class Vdj8StyleSyncEngine {
       kickSnapped,
       kickOffsetMs,
       quantizeMode,
-      grooveMatch,
+      grooveMatch: undefined,
       desiredGrooveOffsetMs
     };
   }
@@ -426,24 +413,35 @@ export class Vdj8StyleSyncEngine {
     return best;
   }
 
+  public isGridValid(grid: BeatGrid | null | undefined): boolean {
+    if (!grid) return false;
+    if (!Number.isFinite(grid.samplesPerBeat) || grid.samplesPerBeat <= 0) return false;
+    if (!Number.isFinite(grid.bpm) || grid.bpm < 30 || grid.bpm > 260) return false;
+    const anchor = grid.beatStartSample ?? grid.firstDownbeatSample;
+    return Number.isFinite(anchor);
+  }
+
   private beatIndexToSample(index: number, grid: BeatGrid): number {
-    const exact = grid.beatSamples?.[index];
-    if (Number.isFinite(exact)) return Math.max(0, Math.round(exact));
-    return Math.max(0, Math.round(grid.firstDownbeatSample + index * grid.samplesPerBeat));
+    // DiscDJ parity: both waveform and sync must use the SAME straight beat_start + samplesPerBeat geometry
+    const anchor = grid.beatStartSample ?? grid.firstDownbeatSample ?? 0;
+    return Math.max(0, Math.round(anchor + index * grid.samplesPerBeat));
   }
 
   private sampleToBeat(sample: number, grid: BeatGrid): number {
     if (!Number.isFinite(sample) || !Number.isFinite(grid.samplesPerBeat) || grid.samplesPerBeat <= 0) {
       return 0;
     }
-    return (sample - grid.firstDownbeatSample) / grid.samplesPerBeat;
+    const anchor = grid.beatStartSample ?? grid.firstDownbeatSample ?? 0;
+    return (sample - anchor) / grid.samplesPerBeat;
   }
 
   private safeGrid(grid: BeatGrid, sampleRate: number, bpm: number): BeatGrid {
     if (grid && Number.isFinite(grid.samplesPerBeat) && grid.samplesPerBeat > 0) return grid;
     const samplesPerBeat = sampleRate * 60 / this.safeBpm(bpm);
+    const anchor = grid?.beatStartSample ?? grid?.firstDownbeatSample ?? 0;
     return {
-      firstDownbeatSample: 0,
+      firstDownbeatSample: anchor,
+      beatStartSample: anchor,
       samplesPerBeat,
       bpm: this.safeBpm(bpm),
       beatsPerBar: 4,

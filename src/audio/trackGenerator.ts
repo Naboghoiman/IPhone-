@@ -5,7 +5,7 @@
  * including authentic Afrobeat, Dancehall, Amapiano, House, Techno, DnB, and Variable BPM tracks.
  */
 
-import { BeatGrid, TrackData } from '../types/dj';
+import { BeatGrid, DiscDjPhaseAnchor, TrackData } from '../types/dj';
 import { analyzeAudioBufferBpm, refineTrackBeatGrid } from './bpmAnalyzer';
 import { FIFTY_TEST_SONGS, SongLibraryItem } from './songLibrary';
 
@@ -286,16 +286,32 @@ export function buildSyntheticTrack(
   }
 
   const firstDownbeatSample = beatSamples[0] || 0;
+  const rawBeatPhaseSeconds = firstDownbeatSample / sampleRate;
+  const beatPeriodSeconds = 60.0 / bpm;
+  const normalizedBeatStartSeconds =
+    ((rawBeatPhaseSeconds % beatPeriodSeconds) + beatPeriodSeconds) % beatPeriodSeconds;
+  const beatStartSample = Math.round(normalizedBeatStartSeconds * sampleRate);
+
+  const discDjAnchor: DiscDjPhaseAnchor = {
+    analyzedBpm: bpm,
+    rawBeatPhaseSeconds,
+    beatPeriodSeconds,
+    normalizedBeatStartSeconds,
+    beatStartSample
+  };
 
   const beatGrid: BeatGrid = {
     firstDownbeatSample,
+    beatStartSample,
+    discDjAnchor,
     samplesPerBeat: baseSamplesPerBeat,
     bpm,
     beatsPerBar: 4,
     totalBeats: beatSamples.length,
     confidence: preset.variableBpm ? 0.92 : 0.99,
     beatSamples,
-    isDownbeat
+    isDownbeat,
+    gridType: 'STRAIGHT'
   };
 
   const rawTrack: TrackData = {
@@ -313,14 +329,9 @@ export function buildSyntheticTrack(
     color: preset.color
   };
 
-  // Run MASAVU BeatGrid refinement upfront before synchronization
-  try {
-    const { track: refined } = refineTrackBeatGrid(rawTrack);
-    return refined;
-  } catch (err) {
-    console.warn('BeatGrid refinement skipped:', err);
-    return rawTrack;
-  }
+  // For DiscDJ Beat Phase Parity: return rawTrack with canonical straight grid
+  // (BeatGridRefiner is preserved for future multi-track dynamic tests)
+  return rawTrack;
 }
 
 /**
@@ -349,13 +360,16 @@ export async function decodeUploadedAudioFile(
     duration,
     beatGrid: {
       firstDownbeatSample: analysis.firstDownbeatSample,
+      beatStartSample: analysis.beatStartSample,
+      discDjAnchor: analysis.discDjAnchor,
       samplesPerBeat: analysis.samplesPerBeat,
       bpm: analysis.bpm,
       beatsPerBar: 4,
       totalBeats: analysis.beatSamples.length,
       confidence: analysis.confidence,
       beatSamples: analysis.beatSamples,
-      isDownbeat: analysis.isDownbeat
+      isDownbeat: analysis.isDownbeat,
+      gridType: 'STRAIGHT'
     },
     warpMap: {
       transientMarkers: analysis.transientMarkers
@@ -364,12 +378,6 @@ export async function decodeUploadedAudioFile(
     color: '#06b6d4'
   };
 
-  // Run MASAVU BeatGrid refinement upfront before synchronization
-  try {
-    const { track: refined } = refineTrackBeatGrid(rawTrack);
-    return refined;
-  } catch (err) {
-    console.warn('BeatGrid refinement on upload skipped:', err);
-    return rawTrack;
-  }
+  // For DiscDJ Beat Phase Parity: return rawTrack with canonical straight grid
+  return rawTrack;
 }

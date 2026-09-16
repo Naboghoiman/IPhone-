@@ -29,6 +29,12 @@ export class DjMasterController extends BaseDjMasterController {
     const slaveTrack = slaveDeck.getTrack();
     if (!masterTrack || !slaveTrack) return null;
 
+    // DiscDJ Parity rule: if valid BPM/beat_start analysis is not ready, do not full-sync
+    if (!this.vdj8StyleSyncEngine.isGridValid(masterTrack.beatGrid) || !this.vdj8StyleSyncEngine.isGridValid(slaveTrack.beatGrid)) {
+      console.warn('[DiscDJ Sync] ANALYSIS_NOT_READY / SYNC_DEFERRED: grid not fully validated.');
+      return null;
+    }
+
     masterDeck.updateCurrentPosition();
     slaveDeck.updateCurrentPosition();
 
@@ -146,18 +152,13 @@ export class DjMasterController extends BaseDjMasterController {
       slaveGrid: slaveTrack.beatGrid,
       baseTempoMultiplier: slaveDeck.getBaseTempoMultiplier(),
       slaveEffectiveBpm: slaveTelemetry.effectiveBpm,
-      onScheduleReanchor: () => {
-        // Schedule ONE click-free phase re-anchor on the next suitable master beat
-        this.triggerBeatPerfectSlaveStart('beat');
-      }
+      onScheduleReanchor: undefined // DiscDJ parity: no automatic re-anchors
     });
 
-    // Only apply PLL multiplier to slave deck when sync is active and both are playing
-    if (slaveDeck.getSync() && masterTelemetry.isPlaying && slaveTelemetry.isPlaying) {
-      slaveDeck.setPLLMultiplier(result.pllMultiplier);
-    } else {
-      slaveDeck.setPLLMultiplier(1.0);
-    }
+    // DiscDJ parity test: phase controller is TELEMETRY ONLY.
+    // Do NOT apply PLL multiplier. Keep stable tempo.
+    slaveDeck.setPLLMultiplier(1.0);
+    slaveDeck.setJogPitchNudge(0);
 
     return result.telemetry;
   }
@@ -181,41 +182,11 @@ export class DjMasterController extends BaseDjMasterController {
   /**
    * Performs soft micro-phase correction (jog pitch nudge) to smoothly steer
    * any residual phase error back to 0 ms without cutting the audio.
+   * For DiscDJ Parity test: no soft phase nudge during parity testing.
    */
-  public applySoftPhaseCorrection(targetDurationSec = 0.4): { nudgeApplied: number; phaseErrorMs: number } | null {
-    const masterDeck = this.getMasterDeckId() === 'A' ? this.deckA : this.deckB;
-    const slaveDeck = this.getMasterDeckId() === 'A' ? this.deckB : this.deckA;
-
-    const masterTrack = masterDeck.getTrack();
-    const slaveTrack = slaveDeck.getTrack();
-    if (!masterTrack || !slaveTrack) return null;
-
-    masterDeck.updateCurrentPosition();
-    slaveDeck.updateCurrentPosition();
-
-    const masterTelemetry = masterDeck.getTelemetry();
-    const masterBpm = masterTelemetry.effectiveBpm > 20 ? masterTelemetry.effectiveBpm : masterTrack.bpm;
-
-    const errorMs = this.vdj8StyleSyncEngine.measureWrappedPhaseErrorMs({
-      masterCurrentSourceSample: masterDeck.getCurrentSourceSample(),
-      masterGrid: masterTrack.beatGrid,
-      masterBpm,
-      slaveCurrentSourceSample: slaveDeck.getCurrentSourceSample(),
-      slaveGrid: slaveTrack.beatGrid
-    });
-
-    const nudge = this.vdj8StyleSyncEngine.calculateSoftPhaseNudge(errorMs, targetDurationSec);
-    slaveDeck.setJogPitchNudge(nudge);
-
-    // Auto-release nudge back to 0 after targetDurationSec
-    setTimeout(() => {
-      slaveDeck.setJogPitchNudge(0);
-    }, targetDurationSec * 1000);
-
-    return {
-      nudgeApplied: nudge,
-      phaseErrorMs: errorMs
-    };
+  public applySoftPhaseCorrection(_targetDurationSec = 0.4): { nudgeApplied: number; phaseErrorMs: number } | null {
+    // DiscDJ parity: no soft phase nudge during parity test
+    return null;
   }
 
   /**

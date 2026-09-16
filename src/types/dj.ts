@@ -34,6 +34,14 @@ export interface BeatGridRefinementInfo {
   dynamicAnchors?: DynamicBeatAnchor[];
 }
 
+export interface DiscDjPhaseAnchor {
+  analyzedBpm: number;
+  rawBeatPhaseSeconds: number;
+  beatPeriodSeconds: number;
+  normalizedBeatStartSeconds: number;
+  beatStartSample: number;
+}
+
 export interface BeatGrid {
   firstDownbeatSample: number;
   samplesPerBeat: number;
@@ -47,6 +55,9 @@ export interface BeatGrid {
   dynamicAnchors?: DynamicBeatAnchor[];
   refinementInfo?: BeatGridRefinementInfo;
   localBpm?: number;
+  /** DiscDJ canonical repeating beat-phase anchor (beat_start) */
+  beatStartSample?: number;
+  discDjAnchor?: DiscDjPhaseAnchor;
 }
 
 export interface WarpMap {
@@ -124,6 +135,22 @@ export interface SlaveStartPlan {
   prerollOutputTime: number;
 }
 
+export interface DiscDjDeckTelemetry {
+  analyzedBpm: number;
+  rawBeatPhaseSeconds: number;
+  beatPeriodSeconds: number;
+  normalizedBeatStartSeconds: number;
+  beatStartSample: number;
+  waveformGridStartSample: number;
+  syncGridStartSample: number;
+  currentSourceSample: number;
+  currentEffectiveSpeed: number;
+  nextFourBeatBoundarySource: number;
+  audioBufferLatencyMs: number;
+  gridMode: 'DISCDJ_STRAIGHT';
+  parityValid: boolean;
+}
+
 export interface DeckTelemetry {
   deckId: 'A' | 'B';
   isPlaying: boolean;
@@ -149,4 +176,5 @@ export interface DeckTelemetry {
   midEq: number;
   highEq: number;
   filter: number;
+  discDjTelemetry?: DiscDjDeckTelemetry;
 }

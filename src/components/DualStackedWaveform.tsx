@@ -161,7 +161,7 @@ export const DualStackedWaveform: React.FC<DualStackedWaveformProps> = ({
             ctx.fillRect(px - boxSize / 2, deckStartY + deckH - 6, boxSize, boxSize);
           }
         } else if (samplesPerBeat > 0) {
-          const firstBeat = track.beatGrid.firstDownbeatSample || 0;
+          const firstBeat = track.beatGrid.beatStartSample ?? track.beatGrid.firstDownbeatSample ?? 0;
           const firstVisibleBeat = Math.floor((startSample - firstBeat) / samplesPerBeat);
           const lastVisibleBeat = Math.ceil((endSample - firstBeat) / samplesPerBeat);
 

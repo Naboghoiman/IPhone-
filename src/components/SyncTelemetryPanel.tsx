@@ -300,6 +300,115 @@ export function SyncTelemetryPanel({
         </div>
       )}
 
+      {/* DiscDJ Canonical Phase Anchoring & Grid Parity Telemetry */}
+      {(masterTelemetry.discDjTelemetry || slaveTelemetry.discDjTelemetry) && (
+        <div className="bg-slate-950/80 border border-cyan-500/30 rounded-lg p-3 mb-3 text-xs font-mono">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-800 text-cyan-400 font-bold">
+            <span className="flex items-center gap-1.5">
+              <ShieldCheck className="w-4 h-4 text-cyan-400" />
+              DISCDJ PHASE ANCHORING &amp; STRAIGHT GRID PARITY
+            </span>
+            <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-500/40 text-cyan-300">
+              MODE: DISCDJ_STRAIGHT
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 text-[11px]">
+            {/* Deck A / Master */}
+            {masterTelemetry.discDjTelemetry && (
+              <div className="bg-slate-900/60 border border-slate-800 p-2.5 rounded">
+                <div className="flex items-center justify-between text-slate-300 font-bold mb-1.5">
+                  <span className="text-cyan-300">DECK {masterTelemetry.deckId} ({masterTelemetry.isMaster ? 'MASTER' : 'SLAVE'})</span>
+                  <span className={masterTelemetry.discDjTelemetry.parityValid ? 'text-emerald-400 text-[10px]' : 'text-rose-400 text-[10px]'}>
+                    {masterTelemetry.discDjTelemetry.parityValid ? 'PARITY VERIFIED (Wave == Sync)' : 'PARITY MISMATCH'}
+                  </span>
+                </div>
+                <div className="space-y-0.5 text-slate-400">
+                  <div className="flex justify-between">
+                    <span>Analyzed BPM:</span>
+                    <span className="text-slate-200">{masterTelemetry.discDjTelemetry.analyzedBpm.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Raw Beat Phase:</span>
+                    <span className="text-slate-200">{masterTelemetry.discDjTelemetry.rawBeatPhaseSeconds.toFixed(4)}s</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Beat Period:</span>
+                    <span className="text-slate-200">{masterTelemetry.discDjTelemetry.beatPeriodSeconds.toFixed(4)}s</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Normalized beat_start:</span>
+                    <span className="text-amber-300 font-semibold">{masterTelemetry.discDjTelemetry.normalizedBeatStartSeconds.toFixed(4)}s</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>beatStartSample:</span>
+                    <span className="text-cyan-300 font-bold">{masterTelemetry.discDjTelemetry.beatStartSample.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Waveform / Sync Grid Start:</span>
+                    <span className="text-slate-200 font-mono">{masterTelemetry.discDjTelemetry.waveformGridStartSample.toLocaleString()} / {masterTelemetry.discDjTelemetry.syncGridStartSample.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Next 4-Beat Boundary:</span>
+                    <span className="text-slate-200">{masterTelemetry.discDjTelemetry.nextFourBeatBoundarySource.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Audio Latency / Speed:</span>
+                    <span className="text-slate-300">{masterTelemetry.discDjTelemetry.audioBufferLatencyMs.toFixed(1)}ms | {masterTelemetry.discDjTelemetry.currentEffectiveSpeed.toFixed(4)}x</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Deck B / Slave */}
+            {slaveTelemetry.discDjTelemetry && (
+              <div className="bg-slate-900/60 border border-slate-800 p-2.5 rounded">
+                <div className="flex items-center justify-between text-slate-300 font-bold mb-1.5">
+                  <span className="text-amber-300">DECK {slaveTelemetry.deckId} ({slaveTelemetry.isMaster ? 'MASTER' : 'SLAVE'})</span>
+                  <span className={slaveTelemetry.discDjTelemetry.parityValid ? 'text-emerald-400 text-[10px]' : 'text-rose-400 text-[10px]'}>
+                    {slaveTelemetry.discDjTelemetry.parityValid ? 'PARITY VERIFIED (Wave == Sync)' : 'PARITY MISMATCH'}
+                  </span>
+                </div>
+                <div className="space-y-0.5 text-slate-400">
+                  <div className="flex justify-between">
+                    <span>Analyzed BPM:</span>
+                    <span className="text-slate-200">{slaveTelemetry.discDjTelemetry.analyzedBpm.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Raw Beat Phase:</span>
+                    <span className="text-slate-200">{slaveTelemetry.discDjTelemetry.rawBeatPhaseSeconds.toFixed(4)}s</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Beat Period:</span>
+                    <span className="text-slate-200">{slaveTelemetry.discDjTelemetry.beatPeriodSeconds.toFixed(4)}s</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Normalized beat_start:</span>
+                    <span className="text-amber-300 font-semibold">{slaveTelemetry.discDjTelemetry.normalizedBeatStartSeconds.toFixed(4)}s</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>beatStartSample:</span>
+                    <span className="text-amber-300 font-bold">{slaveTelemetry.discDjTelemetry.beatStartSample.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Waveform / Sync Grid Start:</span>
+                    <span className="text-slate-200 font-mono">{slaveTelemetry.discDjTelemetry.waveformGridStartSample.toLocaleString()} / {slaveTelemetry.discDjTelemetry.syncGridStartSample.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Next 4-Beat Boundary:</span>
+                    <span className="text-slate-200">{slaveTelemetry.discDjTelemetry.nextFourBeatBoundarySource.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Audio Latency / Speed:</span>
+                    <span className="text-slate-300">{slaveTelemetry.discDjTelemetry.audioBufferLatencyMs.toFixed(1)}ms | {slaveTelemetry.discDjTelemetry.currentEffectiveSpeed.toFixed(4)}x</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Plan Details Strip */}
       {lastPlan && (
         <div className="bg-slate-950/50 border border-slate-800/80 rounded-lg p-3 text-xs font-mono">

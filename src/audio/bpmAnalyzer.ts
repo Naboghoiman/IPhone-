@@ -197,28 +197,228 @@ export function analyzeAudioBufferBpm(
   const preciseBpm = Math.round(rawBpm * 100) / 100;
   const samplesPerBeat = (sampleRate * 60) / preciseBpm;
 
-  // 7. DiscDJ Canonical Beat Phase Anchor Calculation
-  // Extract raw beat phase from rhythm onset novelty curve
+  // 7. DiscDJ-style Canonical Beat Phase Anchor Calculation
+  //
+  // IMPORTANT:
+  // - BPM has already been calculated above.
+  // - Do NOT choose beat_start from one strongest event in the first beat.
+  // - Estimate one repeating phase inside [0, one beat) by scoring the existing
+  //   onset-novelty curve over many consecutive beats.
+  // - This is beat PHASE only. It does not determine musical bar/downbeat Beat 1.
+
   const rhythmStartSample = rhythmStartFrame * hopSize;
-  let strongestNoveltyFrame = rhythmStartFrame;
-  let maxNovInFirstBeat = 0;
-  const firstBeatFrames = Math.min(
-    envelopeLength,
-    rhythmStartFrame + Math.max(1, Math.round(envelopeSampleRate * (60.0 / preciseBpm)))
+  const beatPeriodSeconds = 60.0 / preciseBpm;
+
+  // One beat expressed in novelty-envelope frames.
+  // This remains fractional so BPM precision is not lost by integer rounding.
+  const beatPeriodNoveltyFrames = envelopeSampleRate * beatPeriodSeconds;
+
+  // Linear interpolation of the already-computed normalized novelty curve.
+  // Using interpolation lets the phase search refine below one novelty hop without
+  // using raw waveform amplitude as the phase authority.
+  const noveltyAt = (framePosition: number): number => {
+    if (!Number.isFinite(framePosition) || framePosition < 0) return 0;
+
+    const i0 = Math.floor(framePosition);
+    if (i0 >= novelty.length) return 0;
+
+    const i1 = Math.min(novelty.length - 1, i0 + 1);
+    const frac = framePosition - i0;
+
+    return novelty[i0] * (1.0 - frac) + novelty[i1] * frac;
+  };
+
+  // Keep any candidate phase inside exactly one beat period.
+  const wrapPhaseFrame = (phaseFrame: number): number => {
+    if (!(beatPeriodNoveltyFrames > 0)) return 0;
+
+    let wrapped = phaseFrame % beatPeriodNoveltyFrames;
+    if (wrapped < 0) wrapped += beatPeriodNoveltyFrames;
+    return wrapped;
+  };
+
+  // Score one candidate repeating phase.
+  //
+  // For a candidate phase phi, inspect:
+  //   phi + k*P
+  // across the active rhythmic section.
+  //
+  // The score rewards:
+  //   1. repeated onset strength,
+  //   2. consistency across many beats.
+  //
+  // Individual extreme transients are clipped so one loud hit cannot determine
+  // the phase for the whole song.
+  const availableBeatCount = Math.max(
+    1,
+    Math.floor(
+      (envelopeLength - rhythmStartFrame - 1) /
+      Math.max(1e-9, beatPeriodNoveltyFrames)
+    )
   );
 
-  for (let n = rhythmStartFrame; n < firstBeatFrames; n++) {
-    if (novelty[n] > maxNovInFirstBeat) {
-      maxNovInFirstBeat = novelty[n];
-      strongestNoveltyFrame = n;
+  const beatsToScore = Math.max(1, Math.min(32, availableBeatCount));
+
+  // novelty[] is normalized to [0, 1] above.
+  // A modest support threshold distinguishes a real repeated onset from the floor.
+  const ONSET_SUPPORT_THRESHOLD = 0.12;
+  const OUTLIER_CLIP = 0.85;
+
+  const scoreRepeatingPhase = (
+    candidatePhaseFrame: number
+  ): { score: number; meanSupport: number; consistency: number; count: number } => {
+    const phase = wrapPhaseFrame(candidatePhaseFrame);
+
+    // Find the first occurrence of this repeating phase at or after rhythmStartFrame.
+    let beatNumber = Math.ceil(
+      (rhythmStartFrame - phase) /
+      Math.max(1e-9, beatPeriodNoveltyFrames)
+    );
+
+    if (!Number.isFinite(beatNumber)) beatNumber = 0;
+
+    let position = phase + beatNumber * beatPeriodNoveltyFrames;
+
+    // Floating-point protection.
+    while (position < rhythmStartFrame) {
+      beatNumber += 1;
+      position += beatPeriodNoveltyFrames;
+    }
+
+    let supportSum = 0;
+    let supportedBeats = 0;
+    let count = 0;
+
+    for (
+      let b = 0;
+      b < beatsToScore && position < envelopeLength - 1;
+      b++, position += beatPeriodNoveltyFrames
+    ) {
+      const onset = noveltyAt(position);
+
+      // Robustify against a single abnormally large transient.
+      supportSum += Math.min(OUTLIER_CLIP, Math.max(0, onset));
+
+      if (onset >= ONSET_SUPPORT_THRESHOLD) {
+        supportedBeats += 1;
+      }
+
+      count += 1;
+    }
+
+    if (count === 0) {
+      return {
+        score: Number.NEGATIVE_INFINITY,
+        meanSupport: 0,
+        consistency: 0,
+        count: 0
+      };
+    }
+
+    const meanSupport = supportSum / count;
+    const consistency = supportedBeats / count;
+
+    // Main authority is repeated onset strength.
+    // Consistency prevents one isolated hit from winning.
+    const score =
+      0.75 * meanSupport +
+      0.25 * consistency;
+
+    return {
+      score,
+      meanSupport,
+      consistency,
+      count
+    };
+  };
+
+  // ---------------------------------------------------------------------------
+  // A. COARSE PHASE SEARCH
+  //
+  // Search the complete one-beat phase interval.
+  // One novelty frame is approximately 2 ms with the repository's ~500 Hz
+  // analysis envelope.
+  // ---------------------------------------------------------------------------
+
+  let bestPhaseFrame = 0;
+  let bestPhaseScore = Number.NEGATIVE_INFINITY;
+
+  for (
+    let phaseFrame = 0;
+    phaseFrame < beatPeriodNoveltyFrames;
+    phaseFrame += 1.0
+  ) {
+    const result = scoreRepeatingPhase(phaseFrame);
+
+    if (result.score > bestPhaseScore) {
+      bestPhaseScore = result.score;
+      bestPhaseFrame = phaseFrame;
     }
   }
 
-  const rawBeatPhaseSeconds = (strongestNoveltyFrame * hopSize) / sampleRate;
-  const beatPeriodSeconds = 60.0 / preciseBpm;
+  // ---------------------------------------------------------------------------
+  // B. LOCAL SUB-HOP REFINEMENT
+  //
+  // Refine around the winning coarse phase by +/-10 ms.
+  // The novelty curve is linearly interpolated, so the search can use quarter-hop
+  // increments without switching to raw waveform-peak detection.
+  // ---------------------------------------------------------------------------
+
+  const localRadiusFrames = Math.max(
+    1.0,
+    envelopeSampleRate * 0.010 // +/-10 ms
+  );
+
+  const localStepFrames = 0.25; // ~0.5 ms when envelope rate is ~500 Hz
+
+  let refinedPhaseFrame = bestPhaseFrame;
+  let refinedPhaseScore = bestPhaseScore;
+
+  for (
+    let delta = -localRadiusFrames;
+    delta <= localRadiusFrames + 1e-9;
+    delta += localStepFrames
+  ) {
+    const candidate = wrapPhaseFrame(bestPhaseFrame + delta);
+    const result = scoreRepeatingPhase(candidate);
+
+    if (result.score > refinedPhaseScore) {
+      refinedPhaseScore = result.score;
+      refinedPhaseFrame = candidate;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // C. BUILD THE CANONICAL beat_start
+  //
+  // refinedPhaseFrame is already a repeating phase inside one beat.
+  // Convert it to an absolute occurrence near the active rhythm section only so
+  // rawBeatPhaseSeconds remains an actual source-time observation.
+  //
+  // Then normalize back into one beat period exactly as before.
+  // ---------------------------------------------------------------------------
+
+  let firstObservedPhaseFrame =
+    refinedPhaseFrame +
+    Math.ceil(
+      (rhythmStartFrame - refinedPhaseFrame) /
+      Math.max(1e-9, beatPeriodNoveltyFrames)
+    ) *
+      beatPeriodNoveltyFrames;
+
+  while (firstObservedPhaseFrame < rhythmStartFrame) {
+    firstObservedPhaseFrame += beatPeriodNoveltyFrames;
+  }
+
+  const rawBeatPhaseSeconds =
+    firstObservedPhaseFrame / envelopeSampleRate;
+
   const normalizedBeatStartSeconds =
-    ((rawBeatPhaseSeconds % beatPeriodSeconds) + beatPeriodSeconds) % beatPeriodSeconds;
-  const beatStartSample = Math.round(normalizedBeatStartSeconds * sampleRate);
+    ((rawBeatPhaseSeconds % beatPeriodSeconds) + beatPeriodSeconds) %
+    beatPeriodSeconds;
+
+  const beatStartSample =
+    Math.round(normalizedBeatStartSeconds * sampleRate);
 
   const discDjAnchor: DiscDjPhaseAnchor = {
     analyzedBpm: preciseBpm,
